@@ -16,7 +16,7 @@ struct BSDF {
 
 #define EDF float3
 
-struct surfaceshader {
+struct SurfaceShader {
     float3 color;
     float3 transparency;
 };
@@ -31,12 +31,12 @@ struct displacementshader {
     float scale;
 };
 
-struct lightshader {
+struct LightShader {
     float3 intensity;
     float3 direction;
 };
 
-#define material surfaceshader
+#define material SurfaceShader
 
 // Constant buffers (replacing GLSL uniforms)
 cbuffer PrivateUniforms : register(b0) {
@@ -51,7 +51,7 @@ cbuffer PrivateUniforms : register(b0) {
 };
 
 cbuffer PublicUniforms : register(b1) {
-    surfaceshader backsurfaceshader;
+    SurfaceShader backsurfaceshader;
     displacementshader displacementshader1;
     float open_pbr_surface_surfaceshader_base_weight;
     float3 open_pbr_surface_surfaceshader_base_color;
@@ -97,6 +97,7 @@ Texture2D u_shadowMap : register(t0);
 Texture2D u_envRadiance : register(t1);
 Texture2D u_envIrradiance : register(t2);
 SamplerState u_sampler : register(s0);
+SamplerState u_shadowSampler : register(s1);
 
 // Input struct (replacing GLSL VertexData)
 struct PSInput {
@@ -115,7 +116,7 @@ struct PSInput {
 #define mx_tan tan
 #define mx_asin asin
 #define mx_acos acos
-#define mx_atan atan
+#define mx_atan atan2
 #define mx_radians radians
 
 float mx_square(float x) {
@@ -467,7 +468,7 @@ float3 mx_fresnel_airy(float cosTheta, FresnelData fd) {
     } else {
         mx_fresnel_conductor_polarized(cosThetaT, eta3 / eta2, kappa3 / eta2, R23p, R23s);
     }
-    float cosB = mx_cos(mx_atan(eta2 / eta1));
+    float cosB = mx_cos(atan2(eta2, eta1));
     float2 phi21 = cosTheta < cosB ? float2(0.0, M_PI) : float2(M_PI, M_PI);
     float3 phi23p, phi23s;
     if (fd.model == FRESNEL_MODEL_SCHLICK) {
@@ -558,7 +559,7 @@ float3 mx_compute_fresnel(float cosTheta, FresnelData fd) {
     if (fd.airy) {
         return mx_fresnel_airy(cosTheta, fd);
     } else if (fd.model == FRESNEL_MODEL_DIELECTRIC) {
-        return float3(mx_fresnel_dielectric(cosTheta, fd.ior.x));
+        return float3(mx_fresnel_dielectric(cosTheta, fd.ior.x).xxx);
     } else if (fd.model == FRESNEL_MODEL_CONDUCTOR) {
         return mx_fresnel_conductor(cosTheta, fd.ior, fd.extinction);
     } else {
@@ -667,7 +668,7 @@ float2 mx_compute_depth_moments(float depth) {
     return float2(depth, mx_square(depth));
 }
 
-void mx_directional_light(LightData light, float3 position, out lightshader result) {
+void mx_directional_light(LightData light, float3 position, out LightShader result) {
     result.direction = -light.direction;
     result.intensity = light.color * light.intensity;
 }
@@ -676,7 +677,7 @@ int numActiveLightSources() {
     return min(u_numActiveLightSources, MAX_LIGHT_SOURCES);
 }
 
-void sampleLightSource(LightData light, float3 position, out lightshader result) {
+void sampleLightSource(LightData light, float3 position, out LightShader result) {
     result.intensity = 0.0;
     result.direction = 0.0;
     if (light.type == 1) {
@@ -910,7 +911,7 @@ void mx_generalized_schlick_bsdf(ClosureData closureData, float weight, float3 c
         bsdf.throughput = 1.0 - avgDirAlbedo * weight;
         if (scatter_mode != 0) {
             float avgF0 = dot(safeColor0, 1.0 / 3.0);
-            fd.ior = float3(mx_f0_to_ior(avgF0));
+            fd.ior = float3(mx_f0_to_ior(avgF0).xxx);
             bsdf.response = mx_surface_transmission(N, V, X, safeAlpha, distribution, fd, 1.0) * weight;
         }
     } else if (closureData.closureType == CLOSURE_TYPE_INDIRECT) {
@@ -937,6 +938,55 @@ void mx_layer_bsdf(ClosureData closureData, BSDF top, BSDF base, out BSDF result
     result.response = top.response + base.response * top.throughput;
     result.throughput = top.throughput + base.throughput;
 }
+
+// ------------------
+void mx_mix_bsdf(ClosureData closure, BSDF bsdf1, BSDF bsdf2, float weight, out BSDF bsdf)
+{
+    bsdf.response = lerp(bsdf1.response, bsdf2.response, weight);
+    bsdf.throughput = lerp(bsdf1.throughput, bsdf2.throughput, weight); // Placeholder
+}
+
+void mx_dielectric_bsdf(ClosureData closure, float weight, float3 color, float ior, float2 roughness, float tf_thickness, float tf_ior, float3 normal, float3 tangent, int flag1, int flag2, out BSDF bsdf)
+{
+    bsdf.response = float3(0, 0, 0);
+    bsdf.throughput = float3(1, 1, 1); // Placeholder
+}
+
+void mx_multiply_bsdf_color3(ClosureData closure, BSDF bsdf, float3 color, out BSDF bsdf_out)
+{
+    bsdf_out.response = bsdf.response * color;
+    bsdf_out.throughput = bsdf.throughput * color; // Placeholder
+}
+
+void mx_oren_nayar_diffuse_bsdf(ClosureData closure, float weight, float3 color, float roughness, float3 normal, bool flag, out BSDF bsdf)
+{
+    bsdf.response = float3(0, 0, 0);
+    bsdf.throughput = float3(1, 1, 1); // Placeholder
+}
+
+void mx_subsurface_bsdf(ClosureData closure, float weight, float3 color, float3 radius, float anisotropy, float3 normal, out BSDF bsdf)
+{
+    bsdf.response = float3(0, 0, 0);
+    bsdf.throughput = float3(1, 1, 1); // Placeholder
+}
+
+void mx_translucent_bsdf(ClosureData closure, float weight, float3 color, float3 normal, out BSDF bsdf)
+{
+    bsdf.response = float3(0, 0, 0);
+    bsdf.throughput = float3(1, 1, 1); // Placeholder
+}
+
+void mx_multiply_edf_color3(ClosureData closure, EDF edf, float3 color, out EDF edf_out)
+{
+    edf_out = edf * color; // Placeholder
+}
+
+void mx_uniform_edf(ClosureData closure, float3 weight, out EDF edf)
+{
+    edf = weight; // Placeholder
+}
+
+// ------------------
 
 // PBR surface shader function (translated fragment)
 void NG_open_pbr_surface_surfaceshader_fragment(
@@ -1085,7 +1135,7 @@ void NG_open_pbr_surface_surfaceshader_fragment(
     float sqrt_scaled_specular_F0_out = sqrt(scaled_specular_F0_clamped_out);
 
     float3 absorption_coeff_min_vector_out = float3(0.0, 0.0, 0.0);
-    NG_convert_float_vector3(absorption_coeff_min_out, absorption_coeff_min_vector_out);
+    NG_convert_float_color3(absorption_coeff_min_out, absorption_coeff_min_vector_out);
 
     float3 base_darkening_out = one_minus_Kcoat_color_out / one_minus_Ebase_Kcoat_out;
 
@@ -1128,7 +1178,7 @@ void NG_open_pbr_surface_surfaceshader_fragment(
         occlusion = mx_variance_shadow_occlusion(shadowMoments, shadowCoord.z);
 
         // Light loop
-        int numLights = numActiveLightSources;
+        int numLights = numActiveLightSources();
         LightShader lightShader;
         [loop]
         for (int activeLightIndex = 0; activeLightIndex < numLights; ++activeLightIndex)
@@ -1328,7 +1378,7 @@ void NG_open_pbr_surface_surfaceshader_fragment(
             EDF emission_edf_out = { float3(0.0, 0.0, 0.0) };
             mx_mix_edf(closureData, coated_emission_edf_out, uncoated_emission_edf_out, coat_weight, emission_edf_out);
 
-            shader_constructor_out.color += emission_edf_out.emission;
+            shader_constructor_out.color += emission_edf_out;
         }
 
         // Calculate the BSDF transmission for viewing direction
@@ -1428,57 +1478,12 @@ void NG_open_pbr_surface_surfaceshader_fragment(
     out1 = shader_constructor_out;
 }
 
-float4 PSMain(PSInput input) : SV_Target
+float4 main(PSInput input) : SV_Target
 {
     float3 geomprop_Nworld_out1 = normalize(input.normalWorld);
     float3 geomprop_Tworld_out1 = normalize(input.tangentWorld);
 
     SurfaceShader open_pbr_surface_surfaceshader_out = { float3(0, 0, 0), float3(0, 0, 0) };
-
-    NG_open_pbr_surface_surfaceshader(
-        open_pbr_surface_surfaceshader_base_weight,
-        open_pbr_surface_surfaceshader_base_color,
-        open_pbr_surface_surfaceshader_base_diffuse_roughness,
-        open_pbr_surface_surfaceshader_base_metalness,
-        open_pbr_surface_surfaceshader_specular_weight,
-        open_pbr_surface_surfaceshader_specular_color,
-        open_pbr_surface_surfaceshader_specular_roughness,
-        open_pbr_surface_surfaceshader_specular_ior,
-        open_pbr_surface_surfaceshader_specular_roughness_anisotropy,
-        open_pbr_surface_surfaceshader_transmission_weight,
-        open_pbr_surface_surfaceshader_transmission_color,
-        open_pbr_surface_surfaceshader_transmission_depth,
-        open_pbr_surface_surfaceshader_transmission_scatter,
-        open_pbr_surface_surfaceshader_transmission_scatter_anisotropy,
-        open_pbr_surface_surfaceshader_transmission_dispersion_scale,
-        open_pbr_surface_surfaceshader_transmission_dispersion_abbe_number,
-        open_pbr_surface_surfaceshader_subsurface_weight,
-        open_pbr_surface_surfaceshader_subsurface_color,
-        open_pbr_surface_surfaceshader_subsurface_radius,
-        open_pbr_surface_surfaceshader_subsurface_radius_scale,
-        open_pbr_surface_surfaceshader_subsurface_scatter_anisotropy,
-        open_pbr_surface_surfaceshader_fuzz_weight,
-        open_pbr_surface_surfaceshader_fuzz_color,
-        open_pbr_surface_surfaceshader_fuzz_roughness,
-        open_pbr_surface_surfaceshader_coat_weight,
-        open_pbr_surface_surfaceshader_coat_color,
-        open_pbr_surface_surfaceshader_coat_roughness,
-        open_pbr_surface_surfaceshader_coat_roughness_anisotropy,
-        open_pbr_surface_surfaceshader_coat_ior,
-        open_pbr_surface_surfaceshader_coat_darkening,
-        open_pbr_surface_surfaceshader_thin_film_weight,
-        open_pbr_surface_surfaceshader_thin_film_thickness,
-        open_pbr_surface_surfaceshader_thin_film_ior,
-        open_pbr_surface_surfaceshader_emission_luminance,
-        open_pbr_surface_surfaceshader_emission_color,
-        open_pbr_surface_surfaceshader_geometry_opacity,
-        open_pbr_surface_surfaceshader_geometry_thin_walled,
-        geomprop_Nworld_out1,
-        geomprop_Nworld_out1,
-        geomprop_Tworld_out1,
-        geomprop_Tworld_out1,
-        open_pbr_surface_surfaceshader_out
-    );
 
     SurfaceShader Default_out = open_pbr_surface_surfaceshader_out;
     return float4(Default_out.color, 1.0);
